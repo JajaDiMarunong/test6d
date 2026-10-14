@@ -39,8 +39,8 @@
         }
       });
     </script>
-    <script type="module" crossorigin src="./assets/index-DqYOYBvd.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-DF3n49o9.css">
+    <script type="module" crossorigin src="./assets/app.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/app.css">
   </head>
   <body class="bg-slate-950 text-white m-0 p-0 overflow-hidden">
     <div id="root">
@@ -59,6 +59,27 @@
         <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
       </div>
     </div>
+    <script>
+      // Automatic fallback for static GitHub Pages root deployments:
+      // If /src/main.tsx fails (404 on static hosts), automatically load precompiled production bundle!
+      setTimeout(function() {
+        var root = document.getElementById('root');
+        if (root && root.querySelector('#loading-spinner')) {
+          console.warn('/src/main.tsx unavailable on static host. Loading precompiled production bundle...');
+          var s = document.createElement('script');
+          s.type = 'module';
+          s.crossOrigin = 'anonymous';
+          s.src = './assets/app.js';
+          document.body.appendChild(s);
+
+          var l = document.createElement('link');
+          l.rel = 'stylesheet';
+          l.crossOrigin = 'anonymous';
+          l.href = './assets/app.css';
+          document.head.appendChild(l);
+        }
+      }, 500);
+    </script>
   </body>
 </html>
 

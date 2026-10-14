@@ -58,6 +58,27 @@
       </div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Automatic fallback for static GitHub Pages root deployments:
+      // If /src/main.tsx fails (404 on static hosts), automatically load precompiled production bundle!
+      setTimeout(function() {
+        var root = document.getElementById('root');
+        if (root && root.querySelector('#loading-spinner')) {
+          console.warn('/src/main.tsx unavailable on static host. Loading precompiled production bundle...');
+          var s = document.createElement('script');
+          s.type = 'module';
+          s.crossOrigin = 'anonymous';
+          s.src = './assets/app.js';
+          document.body.appendChild(s);
+
+          var l = document.createElement('link');
+          l.rel = 'stylesheet';
+          l.crossOrigin = 'anonymous';
+          l.href = './assets/app.css';
+          document.head.appendChild(l);
+        }
+      }, 500);
+    </script>
   </body>
 </html>
 
