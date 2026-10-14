@@ -1,0 +1,12 @@
+{
+  "name": "WebAR 6DoF Real-to-Virtual Walking Explorer",
+  "description": "Walk in the real world to explore a 3D low-poly floating island with WebXR 6DoF tracking, sensor pedometer fusion, and rear camera safety preview.",
+  "requestFramePermissions": [
+    "camera",
+    "accelerometer",
+    "gyroscope",
+    "magnetometer",
+    "xr-spatial-tracking"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
