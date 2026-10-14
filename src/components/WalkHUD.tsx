@@ -26,6 +26,7 @@ interface WalkHUDProps {
   onToggleMute: () => void;
   onZeroHeading: () => void;
   onCycleSensitivity: () => void;
+  onManualStep: () => void;
 }
 
 export const WalkHUD: React.FC<WalkHUDProps> = ({
@@ -40,6 +41,7 @@ export const WalkHUD: React.FC<WalkHUDProps> = ({
   onToggleMute,
   onZeroHeading,
   onCycleSensitivity,
+  onManualStep,
 }) => {
   const collectedCount = collectibles.filter((c) => c.collected).length;
   const totalCount = collectibles.length;
@@ -262,16 +264,23 @@ export const WalkHUD: React.FC<WalkHUDProps> = ({
               </span>
             </div>
 
-            {/* Quick Step Sensitivity Button */}
-            <div className="flex items-center gap-2">
+            {/* Quick Step Sensitivity & Manual Step Button */}
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={onManualStep}
+                className="px-2 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-400/40 text-[10px] font-semibold transition active:scale-95 cursor-pointer"
+                title="Tap to trigger a step forward"
+              >
+                + Step
+              </button>
               <button
                 onClick={onCycleSensitivity}
-                className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-[10px] text-cyan-300 border border-slate-700 transition cursor-pointer"
+                className="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] text-slate-300 border border-slate-700 transition cursor-pointer"
                 title="Tap to adjust pedometer step sensitivity"
               >
-                Sensitivity: {getSensitivityLabel()}
+                Sens: {getSensitivityLabel()}
               </button>
-              <span className="text-[10px] text-slate-400 font-mono">
+              <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">
                 {settings.strideLength}m
               </span>
             </div>

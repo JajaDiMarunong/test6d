@@ -16,25 +16,26 @@ export class MotionTracker {
     trackingMode: 'simulator',
     sensorHealth: 'idle',
     rawAcceleration: 0,
-    stepThreshold: 0.8,
+    stepThreshold: 0.85,
     statusMessage: 'Ready to walk',
   };
 
   private settings: UserSettings;
   private onStateChange: (state: MotionState) => void;
 
-  // 3D Gyro Math internals
+  // 3D Quaternion Device Orientation
+  public deviceOrientationQuat: THREE.Quaternion = new THREE.Quaternion();
+  public hasOrientation: boolean = false;
   private headingOffset: number = 0;
   private manualYawOffset: number = 0; // touch drag adjust
   private euler = new THREE.Euler();
   private q0 = new THREE.Quaternion();
   private q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // -PI/2 around X
   private zee = new THREE.Vector3(0, 0, 1);
-  private deviceQuat = new THREE.Quaternion();
 
-  // Advanced Pedometer internals
+  // Dynamic Pedometer internals
   private gravVector = { x: 0, y: 9.81, z: 0 };
-  private lastTiltTimestamp: number = 0;
+  private lastFastTiltTimestamp: number = 0;
   private lastStepTimestamp: number = 0;
   private stepIntervals: number[] = [];
   private wasRising: boolean = false;
@@ -43,7 +44,6 @@ export class MotionTracker {
   // WebXR session internals
   private xrSession: any = null;
   private xrRefSpace: any = null;
-  private prevXrPosition: { x: number; y: number; z: number } | null = null;
 
   // Desktop simulator & touch joystick
   private keysPressed: { [key: string]: boolean } = {};
@@ -73,6 +73,14 @@ export class MotionTracker {
 
   public getState(): MotionState {
     return { ...this.state, position: { ...this.state.position } };
+  }
+
+  public getHeadingOffset(): number {
+    return this.headingOffset;
+  }
+
+  public getManualYawOffset(): number {
+    return this.manualYawOffset;
   }
 
   private broadcastState() {
@@ -119,7 +127,7 @@ export class MotionTracker {
       this.bindSensorListeners();
       this.state.trackingMode = 'sensors';
       this.state.sensorHealth = 'good';
-      this.state.statusMessage = '3D Gyro & Adaptive Pedometer Active';
+      this.state.statusMessage = '3D Quaternion Gyro & Pedometer Active';
       this.broadcastState();
 
       return { success: true, message: 'Sensors connected successfully' };
@@ -141,35 +149,32 @@ export class MotionTracker {
   }
 
   /**
-   * High-accuracy dynamic step detector with tilt/look suppression
+   * Dynamic Step Detector: accurately captures human foot strikes while ignoring looking up/down
    */
   private handleDeviceMotion = (event: DeviceMotionEvent) => {
     if (this.state.trackingMode === 'webxr') return;
 
-    // 1. Angular rotation suppression: If user is actively tilting or looking up/down, REJECT steps!
+    // 1. Detect violent phone tilts: Only lock out if wrist flip is very fast (>95 deg/s)
     const rot = event.rotationRate;
-    if (rot) {
-      const angularSpeed = Math.hypot(rot.alpha || 0, rot.beta || 0, rot.gamma || 0);
-      if (angularSpeed > 35) { // 35 deg/s = tilting or panning phone
-        this.lastTiltTimestamp = performance.now();
-      }
+    if (rot && Math.abs(rot.beta || 0) > 95) {
+      this.lastFastTiltTimestamp = performance.now();
     }
 
     const now = performance.now();
-    // In tilt cooldown (<280ms after rotating phone)? Suppress false steps!
-    if (now - this.lastTiltTimestamp < 280) {
+    // 180ms brief suppression after a fast wrist tilt
+    if (now - this.lastFastTiltTimestamp < 180) {
       this.state.rawAcceleration = 0;
       return;
     }
 
-    // 2. Isolate TRUE Earth Vertical Acceleration (walking bounce along gravity vector)
+    // 2. Extract vertical bounce along Earth gravity
     const accWithG = event.accelerationIncludingGravity || { x: 0, y: 9.81, z: 0 };
     const rawX = accWithG.x || 0;
     const rawY = accWithG.y || 0;
     const rawZ = accWithG.z || 0;
 
-    // Low-pass filter to track phone's dynamic orientation relative to Earth gravity
-    const gravAlpha = 0.90;
+    // Low-pass filter to follow gravity vector
+    const gravAlpha = 0.88;
     this.gravVector.x = gravAlpha * this.gravVector.x + (1 - gravAlpha) * rawX;
     this.gravVector.y = gravAlpha * this.gravVector.y + (1 - gravAlpha) * rawY;
     this.gravVector.z = gravAlpha * this.gravVector.z + (1 - gravAlpha) * rawZ;
@@ -177,35 +182,35 @@ export class MotionTracker {
     const gLen = Math.hypot(this.gravVector.x, this.gravVector.y, this.gravVector.z);
     if (gLen < 1.0) return;
 
-    // Linear dynamic acceleration (gravity subtracted)
+    // Dynamic linear acceleration
     const linX = rawX - this.gravVector.x;
     const linY = rawY - this.gravVector.y;
     const linZ = rawZ - this.gravVector.z;
 
-    // Project dynamic acceleration onto the gravity unit vector
+    // Dot product with unit gravity: true vertical impact bounce
     const verticalBounce = (linX * this.gravVector.x + linY * this.gravVector.y + linZ * this.gravVector.z) / gLen;
-    const bounceMagnitude = Math.max(0, verticalBounce); // positive upward impulse of heel strike
+    const bounceMagnitude = Math.max(0, verticalBounce);
 
     this.state.rawAcceleration = Number(bounceMagnitude.toFixed(2));
 
-    // Dynamic threshold: true walking heel strike produces 1.15 to 2.8 m/s² vertical bounce
-    const baseThreshold = 1.15 * this.settings.stepSensitivity;
-    this.state.stepThreshold = Number(baseThreshold.toFixed(2));
+    // Dynamic threshold: 0.70m/s² base multiplied by user sensitivity
+    const activeThreshold = Math.max(0.55, 0.85 * this.settings.stepSensitivity);
+    this.state.stepThreshold = Number(activeThreshold.toFixed(2));
 
-    const minStepIntervalMs = 300; // 3.3 steps/sec max human pace
+    const minStepIntervalMs = 260; // Max ~3.8 steps/sec
 
-    // Peak detection: zero-derivative peak above threshold
+    // Zero-derivative peak detection
     const isRising = bounceMagnitude > this.prevSample;
-    const isPeak = this.wasRising && !isRising && this.prevSample > baseThreshold;
+    const isPeak = this.wasRising && !isRising && this.prevSample > activeThreshold;
     this.wasRising = isRising;
     this.prevSample = bounceMagnitude;
 
-    if (isPeak && now - this.lastStepTimestamp > minStepIntervalMs) {
+    if (isPeak && (now - this.lastStepTimestamp > minStepIntervalMs)) {
       this.registerStep(now);
     }
 
-    // Decay speed to 0 if user stops walking for >1.2s
-    if (now - this.lastStepTimestamp > 1200) {
+    // Decay speed if standing still
+    if (now - this.lastStepTimestamp > 1300) {
       if (this.state.isMoving) {
         this.state.isMoving = false;
         this.state.currentSpeed = 0;
@@ -216,50 +221,44 @@ export class MotionTracker {
   };
 
   /**
-   * 3D Device Orientation with mathematical Quaternion look projection
+   * Full 3D Quaternion Device Orientation: ZERO gimbal lock or glitching when looking up/down!
    */
   private handleDeviceOrientation = (event: DeviceOrientationEvent) => {
-    let headingDeg = 0;
+    const alpha = event.alpha || 0;
+    const beta = event.beta || 0;
+    const gamma = event.gamma || 0;
+    const screenAngle = (window.screen?.orientation?.angle || 0);
 
-    const iosEvent = event as DeviceOrientationEvent & { webkitCompassHeading?: number };
-    if (typeof iosEvent.webkitCompassHeading === 'number' && iosEvent.webkitCompassHeading >= 0) {
-      // iOS Safari provides direct compass heading relative to magnetic north
-      headingDeg = iosEvent.webkitCompassHeading;
-    } else {
-      // Android / W3C: Full 3D Euler to Quaternion to planar forward projection
-      const alpha = event.alpha || 0;
-      const beta = event.beta || 0;
-      const gamma = event.gamma || 0;
-      const screenAngle = (window.screen?.orientation?.angle || 0);
+    const alphaRad = THREE.MathUtils.degToRad(alpha);
+    const betaRad = THREE.MathUtils.degToRad(beta);
+    const gammaRad = THREE.MathUtils.degToRad(gamma);
+    const orientRad = THREE.MathUtils.degToRad(screenAngle);
 
-      const alphaRad = THREE.MathUtils.degToRad(alpha);
-      const betaRad = THREE.MathUtils.degToRad(beta);
-      const gammaRad = THREE.MathUtils.degToRad(gamma);
-      const orientRad = THREE.MathUtils.degToRad(screenAngle);
+    // Three.js Quaternion Tait-Bryan formulation
+    this.euler.set(betaRad, alphaRad, -gammaRad, 'YXZ');
+    this.deviceOrientationQuat.setFromEuler(this.euler);
+    this.deviceOrientationQuat.multiply(this.q1); // Camera faces out device screen/back
+    this.deviceOrientationQuat.multiply(this.q0.setFromAxisAngle(this.zee, -orientRad));
+    this.hasOrientation = true;
 
-      // Construct intrinsic Tait-Bryan orientation angles
-      this.euler.set(betaRad, alphaRad, -gammaRad, 'YXZ');
-      this.deviceQuat.setFromEuler(this.euler);
-      this.deviceQuat.multiply(this.q1); // Camera look out of device
-      this.deviceQuat.multiply(this.q0.setFromAxisAngle(this.zee, -orientRad));
-
-      // Project forward vector (0, 0, -1) onto horizontal X-Z plane
-      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.deviceQuat);
-      headingDeg = THREE.MathUtils.radToDeg(Math.atan2(forward.x, -forward.z));
+    // Calculate smooth horizontal look forward vector for compass heading
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.deviceOrientationQuat);
+    forward.y = 0;
+    if (forward.lengthSq() > 0.008) {
+      forward.normalize();
+      let headingDeg = THREE.MathUtils.radToDeg(Math.atan2(forward.x, -forward.z));
       if (headingDeg < 0) headingDeg += 360;
+      const finalHeading = (headingDeg - this.headingOffset + this.manualYawOffset + 720) % 360;
+      this.state.heading = Number(finalHeading.toFixed(1));
     }
 
-    // Apply calibration offset + user manual touch drag offset
-    const finalHeading = (headingDeg - this.headingOffset + this.manualYawOffset + 720) % 360;
-    this.state.heading = Number(finalHeading.toFixed(1));
-    this.state.pitch = Number((event.beta || 0).toFixed(1));
-    this.state.roll = Number((event.gamma || 0).toFixed(1));
-
+    this.state.pitch = Number(beta.toFixed(1));
+    this.state.roll = Number(gamma.toFixed(1));
     this.broadcastState();
   };
 
   /**
-   * Manual touch drag to adjust heading
+   * Manual touch swipe to adjust horizontal heading
    */
   public addManualYaw(deltaDegrees: number) {
     this.manualYawOffset = (this.manualYawOffset + deltaDegrees + 360) % 360;
@@ -268,27 +267,26 @@ export class MotionTracker {
   }
 
   /**
-   * Registers a verified physical step, moving virtual player forward along current heading
+   * Registers a single verified step, projecting avatar forward in virtual world
    */
   public registerStep(timestamp: number = performance.now()) {
-    const dt = this.lastStepTimestamp > 0 ? (timestamp - this.lastStepTimestamp) / 1000 : 0.6;
+    const dt = this.lastStepTimestamp > 0 ? (timestamp - this.lastStepTimestamp) / 1000 : 0.55;
     this.lastStepTimestamp = timestamp;
 
     this.state.stepCount += 1;
     const stride = this.settings.strideLength;
     this.state.distanceMeters = Number((this.state.distanceMeters + stride).toFixed(2));
 
-    // Rolling cadence calculation (steps per minute)
+    // Rolling cadence calculation
     this.stepIntervals.push(dt);
     if (this.stepIntervals.length > 5) this.stepIntervals.shift();
     const avgDt = this.stepIntervals.reduce((a, b) => a + b, 0) / this.stepIntervals.length;
 
-    this.state.cadence = Math.round(60 / Math.max(0.25, Math.min(2.0, avgDt)));
+    this.state.cadence = Math.round(60 / Math.max(0.25, Math.min(1.8, avgDt)));
     this.state.currentSpeed = Number((stride / Math.max(0.25, avgDt)).toFixed(2));
     this.state.isMoving = true;
 
-    // Project forward along 360° heading in Three.js coordinates
-    // 0° = North (-Z), 90° = East (+X), 180° = South (+Z), 270° = West (-X)
+    // Project forward along 360° heading: North = -Z, East = +X, South = +Z, West = -X
     const headingRad = (this.state.heading * Math.PI) / 180;
     this.state.position.x += Math.sin(headingRad) * stride;
     this.state.position.z -= Math.cos(headingRad) * stride;
@@ -305,7 +303,7 @@ export class MotionTracker {
   }
 
   /**
-   * Zero forward heading: sets current real-world phone look direction to 0° (North)
+   * Zero forward heading: sets current look direction to 0° (North)
    */
   public calibrateForwardHeading() {
     this.headingOffset = (this.headingOffset + this.state.heading) % 360;

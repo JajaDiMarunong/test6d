@@ -141,7 +141,7 @@ export default function App() {
       tracker.updateSimulation(deltaSec);
 
       // Update 3D World visuals & camera
-      world.update(tracker.getState(), deltaSec, currentTime / 1000);
+      world.update(tracker.getState(), tracker, deltaSec, currentTime / 1000);
 
       animId = requestAnimationFrame(loop);
     };
@@ -258,6 +258,7 @@ export default function App() {
         onToggleMute={handleToggleMute}
         onZeroHeading={handleZeroHeading}
         onCycleSensitivity={handleCycleSensitivity}
+        onManualStep={() => trackerRef.current?.registerStep()}
       />
 
       {/* Safety Rear Camera Picture-in-Picture */}

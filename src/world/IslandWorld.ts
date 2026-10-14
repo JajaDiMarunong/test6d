@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { Collectible, MotionState } from '../types';
+import { MotionTracker } from '../engine/MotionTracker';
 import { sound } from '../audio/SoundEffects';
 
 export class IslandWorld {
@@ -481,24 +482,27 @@ export class IslandWorld {
   /**
    * Updates player position, camera orientation, head bobbing, and collision checks
    */
-  public update(motion: MotionState, deltaSec: number, elapsedSec: number) {
+  public update(motion: MotionState, tracker: MotionTracker, deltaSec: number, elapsedSec: number) {
     if (this.isDisposed) return;
 
-    // 1. Camera orientation from heading (interpolated)
-    const targetYaw = -(motion.heading * Math.PI) / 180;
-    // Handle 360 wrap-around smoothly
-    let diff = (targetYaw - this.currentYawRad) % (Math.PI * 2);
-    if (diff < -Math.PI) diff += Math.PI * 2;
-    if (diff > Math.PI) diff -= Math.PI * 2;
-    this.currentYawRad += diff * Math.min(1, deltaSec * 12);
+    // 1. 3D Camera Orientation (Quaternion slerp: ZERO gimbal lock or glitching when looking up/down)
+    if (tracker && tracker.hasOrientation) {
+      const yawOffsetRad = THREE.MathUtils.degToRad(-tracker.getHeadingOffset() + tracker.getManualYawOffset());
+      const yawOffsetQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawOffsetRad);
+      const targetQuat = yawOffsetQuat.multiply(tracker.deviceOrientationQuat);
+      this.camera.quaternion.slerp(targetQuat, Math.min(1, deltaSec * 18));
+    } else {
+      // Desktop simulator fallback
+      const targetYaw = -(motion.heading * Math.PI) / 180;
+      let diff = (targetYaw - this.currentYawRad) % (Math.PI * 2);
+      if (diff < -Math.PI) diff += Math.PI * 2;
+      if (diff > Math.PI) diff -= Math.PI * 2;
+      this.currentYawRad += diff * Math.min(1, deltaSec * 12);
 
-    this.camera.rotation.order = 'YXZ';
-    this.camera.rotation.y = this.currentYawRad;
-    
-    // Natural upright portrait pitch calibration (neutral is ~75° when held in front of chest)
-    const relativePitch = motion.pitch > 25 ? (motion.pitch - 75) : 0;
-    const pitchRad = (THREE.MathUtils.clamp(relativePitch, -30, 30) * Math.PI) / 180;
-    this.camera.rotation.x = -pitchRad * 0.6;
+      this.camera.rotation.order = 'YXZ';
+      this.camera.rotation.y = this.currentYawRad;
+      this.camera.rotation.x = 0;
+    }
 
     // 2. Physical walking head-bobbing oscillator
     if (motion.isMoving) {
