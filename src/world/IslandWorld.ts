@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { Collectible, MotionState } from '../types';
 import { sound } from '../audio/SoundEffects';
 
@@ -108,22 +107,13 @@ export class IslandWorld {
 
     container.appendChild(this.renderer.domElement);
 
-    // 4. Studio Environment Reflection
-    try {
-      const pmremGenerator = new THREE.PMREMGenerator(this.renderer);
-      this.scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
-      pmremGenerator.dispose();
-    } catch {
-      // Safe fallback
-    }
-
-    // 5. Lighting
+    // 4. Lighting & Environment
     this.setupLighting();
 
-    // 6. Build Island Geometry & Nature Trail
+    // 5. Build Island Geometry & Nature Trail
     this.buildWorld();
 
-    // 7. Spawn Collectibles
+    // 6. Spawn Collectibles
     this.spawnCollectibles();
 
     // Resize listener
