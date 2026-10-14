@@ -485,12 +485,9 @@ export class IslandWorld {
   public update(motion: MotionState, tracker: MotionTracker, deltaSec: number, elapsedSec: number) {
     if (this.isDisposed) return;
 
-    // 1. 3D Camera Orientation (Quaternion slerp: ZERO gimbal lock or glitching when looking up/down)
+    // 1. 3D Camera Orientation (Canonical Three.js DeviceOrientationControls: ZERO gimbal lock or glitching)
     if (tracker && tracker.hasOrientation) {
-      const yawOffsetRad = THREE.MathUtils.degToRad(-tracker.getHeadingOffset() + tracker.getManualYawOffset());
-      const yawOffsetQuat = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yawOffsetRad);
-      const targetQuat = yawOffsetQuat.multiply(tracker.deviceOrientationQuat);
-      this.camera.quaternion.slerp(targetQuat, Math.min(1, deltaSec * 18));
+      this.camera.quaternion.copy(tracker.cameraQuaternion);
     } else {
       // Desktop simulator fallback
       const targetYaw = -(motion.heading * Math.PI) / 180;

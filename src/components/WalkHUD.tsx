@@ -285,6 +285,17 @@ export const WalkHUD: React.FC<WalkHUDProps> = ({
               </span>
             </div>
           </div>
+
+          {/* Live Sensor Telemetry Badge */}
+          <div className="mt-2 pt-2 border-t border-white/10 flex items-center justify-between text-[10px] text-slate-400 font-mono px-1">
+            <span className="flex items-center gap-1.5">
+              <span className={`w-1.5 h-1.5 rounded-full ${isStepPulse ? 'bg-emerald-400 scale-150' : 'bg-cyan-400'}`} />
+              Live Accel: <strong className="text-slate-200">{motion.rawAcceleration}</strong> m/s² (Trig: {motion.stepThreshold})
+            </span>
+            <span>
+              Tilt: <strong className="text-slate-200">{Math.round(motion.pitch)}°</strong>
+            </span>
+          </div>
         </div>
       </div>
     </div>
