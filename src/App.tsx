@@ -23,13 +23,15 @@ export default function App() {
 
   // User Settings with default values
   const [settings, setSettings] = useState<UserSettings>(() => {
-    const saved = localStorage.getItem('webar_walking_settings');
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        // fallback
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const saved = window.localStorage.getItem('webar_walking_settings');
+        if (saved) {
+          return JSON.parse(saved);
+        }
       }
+    } catch {
+      // Ignore private browsing or cross-origin localStorage errors
     }
     return {
       strideLength: 0.74,
@@ -71,7 +73,13 @@ export default function App() {
 
   // Save settings on change
   useEffect(() => {
-    localStorage.setItem('webar_walking_settings', JSON.stringify(settings));
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.setItem('webar_walking_settings', JSON.stringify(settings));
+      }
+    } catch {
+      // Ignore private browsing storage errors
+    }
     sound.setMuted(!settings.audioEnabled);
     if (trackerRef.current) {
       trackerRef.current.updateSettings(settings);

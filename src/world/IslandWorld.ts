@@ -84,15 +84,22 @@ export class IslandWorld {
     this.scene.background = new THREE.Color('#93C5FD'); // Dawn Sky Blue
     this.scene.fog = new THREE.FogExp2('#93C5FD', 0.016);
 
-    // 2. Camera setup
-    const aspect = container.clientWidth / container.clientHeight;
+    // 2. Camera & Viewport setup (with robust mobile fallback dimensions)
+    const width = container.clientWidth || window.innerWidth || 360;
+    const height = container.clientHeight || window.innerHeight || 640;
+    const aspect = width / Math.max(1, height);
     this.camera = new THREE.PerspectiveCamera(70, aspect, 0.1, 1000);
     this.camera.position.set(0, 1.6, 0);
 
     // 3. Renderer setup adhering to Three.js Guidelines
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
-    this.renderer.setSize(container.clientWidth, container.clientHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: false,
+      powerPreference: 'high-performance',
+      failIfMajorPerformanceCaveat: false,
+    });
+    this.renderer.setSize(width, height);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
@@ -582,9 +589,9 @@ export class IslandWorld {
 
   private handleResize = () => {
     if (!this.container || this.isDisposed) return;
-    const width = this.container.clientWidth;
-    const height = this.container.clientHeight;
-    this.camera.aspect = width / height;
+    const width = this.container.clientWidth || window.innerWidth || 360;
+    const height = this.container.clientHeight || window.innerHeight || 640;
+    this.camera.aspect = width / Math.max(1, height);
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
   };
