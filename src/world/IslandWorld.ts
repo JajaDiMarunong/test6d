@@ -90,20 +90,20 @@ export class IslandWorld {
     this.camera = new THREE.PerspectiveCamera(70, aspect, 0.1, 1000);
     this.camera.position.set(0, 1.6, 0);
 
-    // 3. Renderer setup adhering to Three.js Guidelines
+    // 3. High-performance Mobile Renderer (No heavy shadow maps)
     this.renderer = new THREE.WebGLRenderer({
       antialias: true,
       alpha: false,
       powerPreference: 'high-performance',
+      precision: 'mediump',
       failIfMajorPerformanceCaveat: false,
     });
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.4));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMappingExposure = 1.2;
+    this.renderer.shadowMap.enabled = false;
 
     container.appendChild(this.renderer.domElement);
 
@@ -122,23 +122,17 @@ export class IslandWorld {
 
   private setupLighting() {
     // Warm Sun Directional Light
-    const sunLight = new THREE.DirectionalLight('#FFF7ED', 2.0);
-    sunLight.position.set(45, 60, 25);
-    sunLight.castShadow = true;
-    sunLight.shadow.mapSize.width = 1024;
-    sunLight.shadow.mapSize.height = 1024;
-    sunLight.shadow.camera.near = 10;
-    sunLight.shadow.camera.far = 150;
-    sunLight.shadow.camera.left = -40;
-    sunLight.shadow.camera.right = 40;
-    sunLight.shadow.camera.top = 40;
-    sunLight.shadow.camera.bottom = -40;
-    sunLight.shadow.bias = -0.001;
+    const sunLight = new THREE.DirectionalLight('#FFF7ED', 2.2);
+    sunLight.position.set(30, 50, 20);
     this.scene.add(sunLight);
 
     // Soft Sky Fill Light
-    const hemiLight = new THREE.HemisphereLight('#E0F2FE', '#334155', 1.2);
+    const hemiLight = new THREE.HemisphereLight('#BAE6FD', '#334155', 1.4);
     this.scene.add(hemiLight);
+
+    // Gentle Ambient light
+    const ambLight = new THREE.AmbientLight('#FFFFFF', 0.4);
+    this.scene.add(ambLight);
   }
 
   private buildWorld() {

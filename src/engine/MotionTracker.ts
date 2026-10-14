@@ -33,8 +33,8 @@ export class MotionTracker {
   private deviceQuat = new THREE.Quaternion();
 
   // Advanced Pedometer internals
-  private gravityFilterMag: number = 9.81;
-  private accelWindow: number[] = [];
+  private gravVector = { x: 0, y: 9.81, z: 0 };
+  private lastTiltTimestamp: number = 0;
   private lastStepTimestamp: number = 0;
   private stepIntervals: number[] = [];
   private wasRising: boolean = false;
@@ -141,72 +141,66 @@ export class MotionTracker {
   }
 
   /**
-   * High-accuracy dynamic step detector
+   * High-accuracy dynamic step detector with tilt/look suppression
    */
   private handleDeviceMotion = (event: DeviceMotionEvent) => {
     if (this.state.trackingMode === 'webxr') return;
 
-    // 1. Prefer pure acceleration (gravity-compensated by phone sensor fusion)
-    let linearMag = 0;
-    if (
-      event.acceleration &&
-      typeof event.acceleration.x === 'number' &&
-      typeof event.acceleration.y === 'number' &&
-      typeof event.acceleration.z === 'number' &&
-      (event.acceleration.x !== 0 || event.acceleration.y !== 0 || event.acceleration.z !== 0)
-    ) {
-      linearMag = Math.hypot(
-        event.acceleration.x,
-        event.acceleration.y,
-        event.acceleration.z
-      );
-    } else {
-      // Fallback: subtract gravity using slow exponential moving average
-      const acc = event.accelerationIncludingGravity;
-      if (!acc || acc.x === null || acc.y === null || acc.z === null) return;
-      const totalMag = Math.hypot(acc.x || 0, acc.y || 0, acc.z || 0);
-
-      const gravAlpha = 0.94; // slow time constant ~0.5s
-      this.gravityFilterMag = gravAlpha * this.gravityFilterMag + (1 - gravAlpha) * totalMag;
-      linearMag = Math.abs(totalMag - this.gravityFilterMag);
+    // 1. Angular rotation suppression: If user is actively tilting or looking up/down, REJECT steps!
+    const rot = event.rotationRate;
+    if (rot) {
+      const angularSpeed = Math.hypot(rot.alpha || 0, rot.beta || 0, rot.gamma || 0);
+      if (angularSpeed > 35) { // 35 deg/s = tilting or panning phone
+        this.lastTiltTimestamp = performance.now();
+      }
     }
-
-    this.state.rawAcceleration = Number(linearMag.toFixed(2));
-
-    // Maintain sliding window of recent samples (~0.7s) to adapt to user pace
-    this.accelWindow.push(linearMag);
-    if (this.accelWindow.length > 40) {
-      this.accelWindow.shift();
-    }
-
-    // Dynamic threshold: average of min and max in window
-    let windowMin = Infinity;
-    let windowMax = -Infinity;
-    for (let i = 0; i < this.accelWindow.length; i++) {
-      if (this.accelWindow[i] < windowMin) windowMin = this.accelWindow[i];
-      if (this.accelWindow[i] > windowMax) windowMax = this.accelWindow[i];
-    }
-    const peakToPeak = windowMax - windowMin;
-
-    // Sensitivity tuning: 0.6 = very sensitive, 1.0 = balanced, 1.6 = firm
-    const baseCutoff = 0.55 * this.settings.stepSensitivity;
-    const dynamicThreshold = Math.max(baseCutoff, (windowMin + windowMax) * 0.5);
-    this.state.stepThreshold = Number(dynamicThreshold.toFixed(2));
 
     const now = performance.now();
-    const minStepIntervalMs = 280; // Up to 3.5 steps/sec
+    // In tilt cooldown (<280ms after rotating phone)? Suppress false steps!
+    if (now - this.lastTiltTimestamp < 280) {
+      this.state.rawAcceleration = 0;
+      return;
+    }
 
-    // Peak detection: zero-derivative point above threshold with sufficient amplitude
-    const isRising = linearMag > this.prevSample;
-    const isPeak = this.wasRising && !isRising && this.prevSample > dynamicThreshold;
+    // 2. Isolate TRUE Earth Vertical Acceleration (walking bounce along gravity vector)
+    const accWithG = event.accelerationIncludingGravity || { x: 0, y: 9.81, z: 0 };
+    const rawX = accWithG.x || 0;
+    const rawY = accWithG.y || 0;
+    const rawZ = accWithG.z || 0;
+
+    // Low-pass filter to track phone's dynamic orientation relative to Earth gravity
+    const gravAlpha = 0.90;
+    this.gravVector.x = gravAlpha * this.gravVector.x + (1 - gravAlpha) * rawX;
+    this.gravVector.y = gravAlpha * this.gravVector.y + (1 - gravAlpha) * rawY;
+    this.gravVector.z = gravAlpha * this.gravVector.z + (1 - gravAlpha) * rawZ;
+
+    const gLen = Math.hypot(this.gravVector.x, this.gravVector.y, this.gravVector.z);
+    if (gLen < 1.0) return;
+
+    // Linear dynamic acceleration (gravity subtracted)
+    const linX = rawX - this.gravVector.x;
+    const linY = rawY - this.gravVector.y;
+    const linZ = rawZ - this.gravVector.z;
+
+    // Project dynamic acceleration onto the gravity unit vector
+    const verticalBounce = (linX * this.gravVector.x + linY * this.gravVector.y + linZ * this.gravVector.z) / gLen;
+    const bounceMagnitude = Math.max(0, verticalBounce); // positive upward impulse of heel strike
+
+    this.state.rawAcceleration = Number(bounceMagnitude.toFixed(2));
+
+    // Dynamic threshold: true walking heel strike produces 1.15 to 2.8 m/s² vertical bounce
+    const baseThreshold = 1.15 * this.settings.stepSensitivity;
+    this.state.stepThreshold = Number(baseThreshold.toFixed(2));
+
+    const minStepIntervalMs = 300; // 3.3 steps/sec max human pace
+
+    // Peak detection: zero-derivative peak above threshold
+    const isRising = bounceMagnitude > this.prevSample;
+    const isPeak = this.wasRising && !isRising && this.prevSample > baseThreshold;
     this.wasRising = isRising;
-    this.prevSample = linearMag;
+    this.prevSample = bounceMagnitude;
 
-    if (
-      isPeak &&
-      peakToPeak > baseCutoff * 0.8 &&
-      now - this.lastStepTimestamp > minStepIntervalMs
-    ) {
+    if (isPeak && now - this.lastStepTimestamp > minStepIntervalMs) {
       this.registerStep(now);
     }
 
