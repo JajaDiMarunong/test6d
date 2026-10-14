@@ -19,11 +19,13 @@ interface WalkHUDProps {
   settings: UserSettings;
   collectibles: Collectible[];
   lastFoundRelic: Collectible | null;
+  isStepPulse: boolean;
   onOpenSettings: () => void;
   onOpenPhoneConnect: () => void;
   onToggleSafetyCamera: () => void;
   onToggleMute: () => void;
   onZeroHeading: () => void;
+  onCycleSensitivity: () => void;
 }
 
 export const WalkHUD: React.FC<WalkHUDProps> = ({
@@ -31,11 +33,13 @@ export const WalkHUD: React.FC<WalkHUDProps> = ({
   settings,
   collectibles,
   lastFoundRelic,
+  isStepPulse,
   onOpenSettings,
   onOpenPhoneConnect,
   onToggleSafetyCamera,
   onToggleMute,
   onZeroHeading,
+  onCycleSensitivity,
 }) => {
   const collectedCount = collectibles.filter((c) => c.collected).length;
   const totalCount = collectibles.length;
@@ -51,6 +55,12 @@ export const WalkHUD: React.FC<WalkHUDProps> = ({
   };
 
   const currentCardinal = getCardinal(motion.heading);
+
+  const getSensitivityLabel = () => {
+    if (settings.stepSensitivity <= 0.7) return 'High';
+    if (settings.stepSensitivity <= 1.1) return 'Balanced';
+    return 'Firm';
+  };
 
   return (
     <div className="absolute inset-0 pointer-events-none select-none flex flex-col justify-between p-3 sm:p-5 z-20">
@@ -78,8 +88,10 @@ export const WalkHUD: React.FC<WalkHUDProps> = ({
         {/* Center: Tracking Engine Badge */}
         <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/80 backdrop-blur-md border border-white/10 text-xs">
           <span
-            className={`w-2 h-2 rounded-full ${
-              motion.isMoving
+            className={`w-2 h-2 rounded-full transition-colors ${
+              isStepPulse
+                ? 'bg-emerald-400 scale-125'
+                : motion.isMoving
                 ? 'bg-emerald-400 animate-ping'
                 : 'bg-cyan-400'
             }`}
@@ -88,7 +100,7 @@ export const WalkHUD: React.FC<WalkHUDProps> = ({
             {motion.trackingMode === 'webxr'
               ? 'WebXR 6DoF SLAM'
               : motion.trackingMode === 'sensors'
-              ? 'Sensor Fusion Pedometer'
+              ? '3D Gyro & Adaptive Pedometer'
               : 'Desktop Dev Simulator'}
           </span>
           <span className="text-slate-500" aria-hidden="true">·</span>
@@ -171,11 +183,19 @@ export const WalkHUD: React.FC<WalkHUDProps> = ({
         <div className="rounded-3xl bg-slate-900/85 backdrop-blur-lg border border-white/10 p-3.5 shadow-2xl text-white">
           {/* Upper Metrics Grid */}
           <div className="grid grid-cols-4 gap-2 text-center pb-2.5 border-b border-white/10">
-            {/* Steps */}
-            <div className="flex flex-col items-center justify-center p-1.5">
+            {/* Steps with live visual pulse */}
+            <div
+              className={`flex flex-col items-center justify-center p-1.5 rounded-2xl transition-all duration-150 ${
+                isStepPulse
+                  ? 'bg-emerald-500/30 ring-2 ring-emerald-400 scale-105'
+                  : 'bg-transparent'
+              }`}
+            >
               <div className="flex items-center gap-1 text-cyan-400 mb-0.5">
                 <Footprints className="w-3.5 h-3.5" />
-                <span className="text-[10px] font-bold uppercase tracking-wider">Steps</span>
+                <span className="text-[10px] font-bold uppercase tracking-wider">
+                  {isStepPulse ? 'STEP!' : 'Steps'}
+                </span>
               </div>
               <span className="font-mono text-xl sm:text-2xl font-black text-white tracking-tight">
                 {motion.stepCount.toLocaleString()}
@@ -220,7 +240,7 @@ export const WalkHUD: React.FC<WalkHUDProps> = ({
             </div>
           </div>
 
-          {/* Bottom Row: Relics Progress & Mobile Tip */}
+          {/* Bottom Row: Relics Progress & Quick Sensitivity Controller */}
           <div className="flex items-center justify-between pt-2 px-1 text-xs">
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1">
@@ -238,12 +258,22 @@ export const WalkHUD: React.FC<WalkHUDProps> = ({
                 ))}
               </div>
               <span className="text-[11px] font-medium text-slate-300">
-                {collectedCount} / {totalCount} Relics Found
+                {collectedCount} / {totalCount} Relics
               </span>
             </div>
 
-            <div className="text-[10px] text-slate-400 font-mono">
-              Stride: {settings.strideLength}m
+            {/* Quick Step Sensitivity Button */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={onCycleSensitivity}
+                className="px-2 py-0.5 rounded-md bg-slate-800 hover:bg-slate-700 text-[10px] text-cyan-300 border border-slate-700 transition cursor-pointer"
+                title="Tap to adjust pedometer step sensitivity"
+              >
+                Sensitivity: {getSensitivityLabel()}
+              </button>
+              <span className="text-[10px] text-slate-400 font-mono">
+                {settings.strideLength}m
+              </span>
             </div>
           </div>
         </div>

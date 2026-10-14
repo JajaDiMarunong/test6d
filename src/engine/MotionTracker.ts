@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { MotionState, TrackingMode, SensorHealth, UserSettings } from '../types';
 import { sound } from '../audio/SoundEffects';
 
@@ -15,34 +16,45 @@ export class MotionTracker {
     trackingMode: 'simulator',
     sensorHealth: 'idle',
     rawAcceleration: 0,
-    stepThreshold: 11.2,
-    statusMessage: 'Ready to track',
+    stepThreshold: 0.8,
+    statusMessage: 'Ready to walk',
   };
 
   private settings: UserSettings;
   private onStateChange: (state: MotionState) => void;
 
-  // Sensor processing internals
-  private lastAccelMag: number = 9.8;
-  private accelFilter: number = 9.8;
+  // 3D Gyro Math internals
+  private headingOffset: number = 0;
+  private manualYawOffset: number = 0; // touch drag adjust
+  private euler = new THREE.Euler();
+  private q0 = new THREE.Quaternion();
+  private q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // -PI/2 around X
+  private zee = new THREE.Vector3(0, 0, 1);
+  private deviceQuat = new THREE.Quaternion();
+
+  // Advanced Pedometer internals
+  private gravityFilterMag: number = 9.81;
+  private accelWindow: number[] = [];
   private lastStepTimestamp: number = 0;
   private stepIntervals: number[] = [];
-  private headingOffset: number = 0; // Calibration offset
-  private isCalibrated: boolean = false;
+  private wasRising: boolean = false;
+  private prevSample: number = 0;
 
   // WebXR session internals
   private xrSession: any = null;
   private xrRefSpace: any = null;
   private prevXrPosition: { x: number; y: number; z: number } | null = null;
 
-  // Keyboard simulator internals
+  // Desktop simulator & touch joystick
   private keysPressed: { [key: string]: boolean } = {};
   private joystickVector: { x: number; y: number } = { x: 0, y: 0 };
   private simStepAccumulator: number = 0;
 
   // Camera video element for safety PiP
   private videoStream: MediaStream | null = null;
-  private videoElement: HTMLVideoElement | null = null;
+
+  // Step callback for UI flash pulse
+  public onStepDetected?: () => void;
 
   constructor(
     initialSettings: UserSettings,
@@ -56,8 +68,6 @@ export class MotionTracker {
 
   public updateSettings(newSettings: UserSettings) {
     this.settings = newSettings;
-    // Adapt step threshold based on user sensitivity
-    this.state.stepThreshold = 10.0 + this.settings.stepSensitivity * 1.2;
     this.broadcastState();
   }
 
@@ -70,7 +80,7 @@ export class MotionTracker {
   }
 
   /**
-   * Request device sensors (iOS 13+ requires explicit permission from user gesture)
+   * Request device sensors (iOS 13+ requires explicit user gesture permission)
    */
   public async enableSensors(): Promise<{ success: boolean; message: string }> {
     try {
@@ -78,7 +88,7 @@ export class MotionTracker {
       this.state.statusMessage = 'Requesting motion sensors...';
       this.broadcastState();
 
-      // Check for iOS Permission API
+      // Check iOS 13+ permission prompts
       const DeviceOrientationEventAny = window.DeviceOrientationEvent as unknown as {
         requestPermission?: () => Promise<'granted' | 'denied'>;
       };
@@ -90,9 +100,9 @@ export class MotionTracker {
         const motionPerm = await DeviceMotionEventAny.requestPermission();
         if (motionPerm !== 'granted') {
           this.state.sensorHealth = 'denied';
-          this.state.statusMessage = 'Motion sensor permission denied';
+          this.state.statusMessage = 'Motion permission denied';
           this.broadcastState();
-          return { success: false, message: 'Motion permission denied by user' };
+          return { success: false, message: 'Motion sensor permission denied by user' };
         }
       }
 
@@ -109,7 +119,7 @@ export class MotionTracker {
       this.bindSensorListeners();
       this.state.trackingMode = 'sensors';
       this.state.sensorHealth = 'good';
-      this.state.statusMessage = 'Sensor Pedometer & Gyro Active';
+      this.state.statusMessage = '3D Gyro & Adaptive Pedometer Active';
       this.broadcastState();
 
       return { success: true, message: 'Sensors connected successfully' };
@@ -130,67 +140,141 @@ export class MotionTracker {
     window.addEventListener('deviceorientation', this.handleDeviceOrientation, { passive: true });
   }
 
+  /**
+   * High-accuracy dynamic step detector
+   */
   private handleDeviceMotion = (event: DeviceMotionEvent) => {
     if (this.state.trackingMode === 'webxr') return;
 
-    // Use acceleration with gravity if available, or pure acceleration
-    const acc = event.accelerationIncludingGravity || event.acceleration;
-    if (!acc || acc.x === null || acc.y === null || acc.z === null) return;
+    // 1. Prefer pure acceleration (gravity-compensated by phone sensor fusion)
+    let linearMag = 0;
+    if (
+      event.acceleration &&
+      typeof event.acceleration.x === 'number' &&
+      typeof event.acceleration.y === 'number' &&
+      typeof event.acceleration.z === 'number' &&
+      (event.acceleration.x !== 0 || event.acceleration.y !== 0 || event.acceleration.z !== 0)
+    ) {
+      linearMag = Math.hypot(
+        event.acceleration.x,
+        event.acceleration.y,
+        event.acceleration.z
+      );
+    } else {
+      // Fallback: subtract gravity using slow exponential moving average
+      const acc = event.accelerationIncludingGravity;
+      if (!acc || acc.x === null || acc.y === null || acc.z === null) return;
+      const totalMag = Math.hypot(acc.x || 0, acc.y || 0, acc.z || 0);
 
-    const x = acc.x || 0;
-    const y = acc.y || 0;
-    const z = acc.z || 0;
+      const gravAlpha = 0.94; // slow time constant ~0.5s
+      this.gravityFilterMag = gravAlpha * this.gravityFilterMag + (1 - gravAlpha) * totalMag;
+      linearMag = Math.abs(totalMag - this.gravityFilterMag);
+    }
 
-    // Magnitude of 3D acceleration vector
-    const rawMag = Math.hypot(x, y, z);
-    this.state.rawAcceleration = rawMag;
+    this.state.rawAcceleration = Number(linearMag.toFixed(2));
 
-    // Low-pass filter to capture gravity baseline, high-pass for dynamic step impulse
-    const alpha = 0.85;
-    this.accelFilter = alpha * this.accelFilter + (1 - alpha) * rawMag;
-    const dynamicDelta = rawMag - this.accelFilter;
+    // Maintain sliding window of recent samples (~0.7s) to adapt to user pace
+    this.accelWindow.push(linearMag);
+    if (this.accelWindow.length > 40) {
+      this.accelWindow.shift();
+    }
+
+    // Dynamic threshold: average of min and max in window
+    let windowMin = Infinity;
+    let windowMax = -Infinity;
+    for (let i = 0; i < this.accelWindow.length; i++) {
+      if (this.accelWindow[i] < windowMin) windowMin = this.accelWindow[i];
+      if (this.accelWindow[i] > windowMax) windowMax = this.accelWindow[i];
+    }
+    const peakToPeak = windowMax - windowMin;
+
+    // Sensitivity tuning: 0.6 = very sensitive, 1.0 = balanced, 1.6 = firm
+    const baseCutoff = 0.55 * this.settings.stepSensitivity;
+    const dynamicThreshold = Math.max(baseCutoff, (windowMin + windowMax) * 0.5);
+    this.state.stepThreshold = Number(dynamicThreshold.toFixed(2));
 
     const now = performance.now();
-    const minStepIntervalMs = 320; // Human biomechanical limit: max ~3.1 steps/sec
+    const minStepIntervalMs = 280; // Up to 3.5 steps/sec
 
-    // Detect step peak
-    const threshold = this.settings.stepSensitivity * 1.4;
-    if (dynamicDelta > threshold && (now - this.lastStepTimestamp) > minStepIntervalMs) {
+    // Peak detection: zero-derivative point above threshold with sufficient amplitude
+    const isRising = linearMag > this.prevSample;
+    const isPeak = this.wasRising && !isRising && this.prevSample > dynamicThreshold;
+    this.wasRising = isRising;
+    this.prevSample = linearMag;
+
+    if (
+      isPeak &&
+      peakToPeak > baseCutoff * 0.8 &&
+      now - this.lastStepTimestamp > minStepIntervalMs
+    ) {
       this.registerStep(now);
     }
 
-    // Decay speed if user stopped walking
-    if (now - this.lastStepTimestamp > 1400) {
-      this.state.isMoving = false;
-      this.state.currentSpeed = Math.max(0, this.state.currentSpeed * 0.92);
-      this.state.cadence = 0;
-      this.broadcastState();
+    // Decay speed to 0 if user stops walking for >1.2s
+    if (now - this.lastStepTimestamp > 1200) {
+      if (this.state.isMoving) {
+        this.state.isMoving = false;
+        this.state.currentSpeed = 0;
+        this.state.cadence = 0;
+        this.broadcastState();
+      }
     }
   };
 
+  /**
+   * 3D Device Orientation with mathematical Quaternion look projection
+   */
   private handleDeviceOrientation = (event: DeviceOrientationEvent) => {
-    let rawHeading = 0;
+    let headingDeg = 0;
 
-    // iOS Safari provides webkitCompassHeading directly relative to magnetic north
     const iosEvent = event as DeviceOrientationEvent & { webkitCompassHeading?: number };
-    if (typeof iosEvent.webkitCompassHeading === 'number') {
-      rawHeading = iosEvent.webkitCompassHeading;
-    } else if (typeof event.alpha === 'number') {
-      // Android: alpha is angle around z-axis [0, 360)
-      rawHeading = (360 - event.alpha) % 360;
+    if (typeof iosEvent.webkitCompassHeading === 'number' && iosEvent.webkitCompassHeading >= 0) {
+      // iOS Safari provides direct compass heading relative to magnetic north
+      headingDeg = iosEvent.webkitCompassHeading;
+    } else {
+      // Android / W3C: Full 3D Euler to Quaternion to planar forward projection
+      const alpha = event.alpha || 0;
+      const beta = event.beta || 0;
+      const gamma = event.gamma || 0;
+      const screenAngle = (window.screen?.orientation?.angle || 0);
+
+      const alphaRad = THREE.MathUtils.degToRad(alpha);
+      const betaRad = THREE.MathUtils.degToRad(beta);
+      const gammaRad = THREE.MathUtils.degToRad(gamma);
+      const orientRad = THREE.MathUtils.degToRad(screenAngle);
+
+      // Construct intrinsic Tait-Bryan orientation angles
+      this.euler.set(betaRad, alphaRad, -gammaRad, 'YXZ');
+      this.deviceQuat.setFromEuler(this.euler);
+      this.deviceQuat.multiply(this.q1); // Camera look out of device
+      this.deviceQuat.multiply(this.q0.setFromAxisAngle(this.zee, -orientRad));
+
+      // Project forward vector (0, 0, -1) onto horizontal X-Z plane
+      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.deviceQuat);
+      headingDeg = THREE.MathUtils.radToDeg(Math.atan2(forward.x, -forward.z));
+      if (headingDeg < 0) headingDeg += 360;
     }
 
-    // Apply user zeroing offset
-    const calibratedHeading = (rawHeading - this.headingOffset + 360) % 360;
-    this.state.heading = calibratedHeading;
-    this.state.pitch = event.beta || 0;
-    this.state.roll = event.gamma || 0;
+    // Apply calibration offset + user manual touch drag offset
+    const finalHeading = (headingDeg - this.headingOffset + this.manualYawOffset + 720) % 360;
+    this.state.heading = Number(finalHeading.toFixed(1));
+    this.state.pitch = Number((event.beta || 0).toFixed(1));
+    this.state.roll = Number((event.gamma || 0).toFixed(1));
 
     this.broadcastState();
   };
 
   /**
-   * Registers a single physical step, translating into forward motion along current heading
+   * Manual touch drag to adjust heading
+   */
+  public addManualYaw(deltaDegrees: number) {
+    this.manualYawOffset = (this.manualYawOffset + deltaDegrees + 360) % 360;
+    this.state.heading = (this.state.heading + deltaDegrees + 360) % 360;
+    this.broadcastState();
+  }
+
+  /**
+   * Registers a verified physical step, moving virtual player forward along current heading
    */
   public registerStep(timestamp: number = performance.now()) {
     const dt = this.lastStepTimestamp > 0 ? (timestamp - this.lastStepTimestamp) / 1000 : 0.6;
@@ -198,18 +282,19 @@ export class MotionTracker {
 
     this.state.stepCount += 1;
     const stride = this.settings.strideLength;
-    this.state.distanceMeters += stride;
+    this.state.distanceMeters = Number((this.state.distanceMeters + stride).toFixed(2));
 
-    // Keep rolling window of last 4 step intervals for cadence calculation
+    // Rolling cadence calculation (steps per minute)
     this.stepIntervals.push(dt);
     if (this.stepIntervals.length > 5) this.stepIntervals.shift();
     const avgDt = this.stepIntervals.reduce((a, b) => a + b, 0) / this.stepIntervals.length;
 
-    this.state.cadence = Math.round(60 / Math.max(0.3, avgDt));
-    this.state.currentSpeed = Number((stride / Math.max(0.3, avgDt)).toFixed(2));
+    this.state.cadence = Math.round(60 / Math.max(0.25, Math.min(2.0, avgDt)));
+    this.state.currentSpeed = Number((stride / Math.max(0.25, avgDt)).toFixed(2));
     this.state.isMoving = true;
 
-    // Move forward along heading angle
+    // Project forward along 360° heading in Three.js coordinates
+    // 0° = North (-Z), 90° = East (+X), 180° = South (+Z), 270° = West (-X)
     const headingRad = (this.state.heading * Math.PI) / 180;
     this.state.position.x += Math.sin(headingRad) * stride;
     this.state.position.z -= Math.cos(headingRad) * stride;
@@ -218,18 +303,22 @@ export class MotionTracker {
       sound.playFootstep();
     }
 
+    if (this.onStepDetected) {
+      this.onStepDetected();
+    }
+
     this.broadcastState();
   }
 
   /**
-   * Calibrate heading: sets current real-world phone orientation to 0° forward
+   * Zero forward heading: sets current real-world phone look direction to 0° (North)
    */
   public calibrateForwardHeading() {
     this.headingOffset = (this.headingOffset + this.state.heading) % 360;
+    this.manualYawOffset = 0;
     this.state.heading = 0;
-    this.isCalibrated = true;
     sound.playCalibrateBeep();
-    this.state.statusMessage = 'Compass zeroed to forward direction';
+    this.state.statusMessage = 'Compass zeroed to current direction';
     this.broadcastState();
   }
 
@@ -242,7 +331,7 @@ export class MotionTracker {
     this.state.currentSpeed = 0;
     this.state.cadence = 0;
     this.state.position = { x: 0, y: 1.6, z: 0 };
-    this.state.statusMessage = 'Odometer & position reset';
+    this.state.statusMessage = 'Odometer reset to start position';
     sound.playCalibrateBeep();
     this.broadcastState();
   }
@@ -267,7 +356,7 @@ export class MotionTracker {
   public async startWebXRSession(): Promise<{ success: boolean; message: string }> {
     const isSupported = await this.checkWebXRSupport();
     if (!isSupported) {
-      return { success: false, message: 'WebXR immersive-ar not supported on this browser/device.' };
+      return { success: false, message: 'WebXR immersive-ar not supported on this device/browser.' };
     }
 
     try {
@@ -282,14 +371,14 @@ export class MotionTracker {
 
       this.state.trackingMode = 'webxr';
       this.state.sensorHealth = 'good';
-      this.state.statusMessage = 'WebXR 6DoF SLAM Session Active';
+      this.state.statusMessage = 'WebXR 6DoF SLAM Active';
       this.broadcastState();
 
       session.addEventListener('end', () => {
         this.xrSession = null;
         this.xrRefSpace = null;
         this.state.trackingMode = 'sensors';
-        this.state.statusMessage = 'WebXR session ended, switched to Sensors';
+        this.state.statusMessage = 'WebXR session ended, active Sensors';
         this.broadcastState();
       });
 
@@ -305,55 +394,6 @@ export class MotionTracker {
       this.xrSession.end().catch(() => {});
       this.xrSession = null;
     }
-  }
-
-  /**
-   * Called by Three.js render loop when WebXR frame is available
-   */
-  public processXRFrame(frame: any) {
-    if (!frame || !this.xrRefSpace) return;
-    const pose = frame.getViewerPose(this.xrRefSpace);
-    if (!pose) return;
-
-    const { position, orientation } = pose.transform;
-    const x = position.x;
-    const y = position.y;
-    const z = position.z;
-
-    // Compute real-world walking displacement
-    if (this.prevXrPosition) {
-      const dx = x - this.prevXrPosition.x;
-      const dz = z - this.prevXrPosition.z;
-      const dist = Math.hypot(dx, dz);
-
-      if (dist > 0.005) {
-        this.state.distanceMeters += dist;
-        this.state.position.x = x;
-        this.state.position.y = y;
-        this.state.position.z = z;
-        this.state.isMoving = true;
-
-        // Approximate steps from SLAM displacement
-        const stride = this.settings.strideLength;
-        const estimatedSteps = Math.floor(this.state.distanceMeters / stride);
-        if (estimatedSteps > this.state.stepCount) {
-          this.state.stepCount = estimatedSteps;
-          if (this.settings.audioEnabled) sound.playFootstep();
-        }
-      } else {
-        this.state.isMoving = false;
-      }
-    } else {
-      this.prevXrPosition = { x, y, z };
-    }
-
-    // Extract yaw from quaternion [x, y, z, w]
-    const qy = orientation.y;
-    const qw = orientation.w;
-    const yaw = Math.atan2(2 * (qw * qy + orientation.x * orientation.z), 1 - 2 * (qy * qy + orientation.z * orientation.z));
-    this.state.heading = ((yaw * 180) / Math.PI + 360) % 360;
-
-    this.broadcastState();
   }
 
   /**
@@ -405,7 +445,7 @@ export class MotionTracker {
   }
 
   /**
-   * Tick simulation called from requestAnimationFrame loop
+   * Simulation tick called from render loop
    */
   public updateSimulation(deltaSec: number) {
     let forward = 0;
@@ -430,9 +470,9 @@ export class MotionTracker {
     }
 
     if (forward !== 0) {
-      const walkSpeed = 1.35 * forward; // ~1.35 m/s casual walking speed
+      const walkSpeed = 1.35 * forward;
       const moveDist = Math.abs(walkSpeed * deltaSec);
-      this.state.distanceMeters += moveDist;
+      this.state.distanceMeters = Number((this.state.distanceMeters + moveDist).toFixed(2));
       this.state.currentSpeed = Math.abs(walkSpeed);
       this.state.isMoving = true;
 
@@ -448,6 +488,7 @@ export class MotionTracker {
         this.state.stepCount += 1;
         this.state.cadence = 105;
         if (this.settings.audioEnabled) sound.playFootstep();
+        if (this.onStepDetected) this.onStepDetected();
       }
 
       this.broadcastState();

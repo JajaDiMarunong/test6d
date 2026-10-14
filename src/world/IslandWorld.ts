@@ -500,9 +500,11 @@ export class IslandWorld {
 
     this.camera.rotation.order = 'YXZ';
     this.camera.rotation.y = this.currentYawRad;
-    // Add subtle pitch tilt from sensor
-    const pitchRad = (THREE.MathUtils.clamp(motion.pitch, -35, 35) * Math.PI) / 180;
-    this.camera.rotation.x = pitchRad * 0.5;
+    
+    // Natural upright portrait pitch calibration (neutral is ~75° when held in front of chest)
+    const relativePitch = motion.pitch > 25 ? (motion.pitch - 75) : 0;
+    const pitchRad = (THREE.MathUtils.clamp(relativePitch, -30, 30) * Math.PI) / 180;
+    this.camera.rotation.x = -pitchRad * 0.6;
 
     // 2. Physical walking head-bobbing oscillator
     if (motion.isMoving) {

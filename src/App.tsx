@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { IslandWorld } from './world/IslandWorld';
 import { MotionTracker } from './engine/MotionTracker';
 import { WalkHUD } from './components/WalkHUD';
@@ -20,6 +20,10 @@ export default function App() {
   const worldRef = useRef<IslandWorld | null>(null);
   const trackerRef = useRef<MotionTracker | null>(null);
   const [isPhoneConnectOpen, setIsPhoneConnectOpen] = useState<boolean>(false);
+  const [isStepPulse, setIsStepPulse] = useState<boolean>(false);
+
+  // Drag-to-rotate touch tracking
+  const dragStartRef = useRef<{ x: number } | null>(null);
 
   // User Settings with default values
   const [settings, setSettings] = useState<UserSettings>(() => {
@@ -35,7 +39,7 @@ export default function App() {
     }
     return {
       strideLength: 0.74,
-      stepSensitivity: 1.0,
+      stepSensitivity: 0.9, // Responsive default
       audioEnabled: true,
       safetyPipEnabled: false,
       headBobbing: true,
@@ -58,7 +62,7 @@ export default function App() {
     trackingMode: 'simulator',
     sensorHealth: 'idle',
     rawAcceleration: 0,
-    stepThreshold: 11.2,
+    stepThreshold: 0.8,
     statusMessage: 'Ready to walk',
   });
 
@@ -103,6 +107,12 @@ export default function App() {
       setMotion(newState);
     });
     trackerRef.current = tracker;
+
+    // Step flash callback
+    tracker.onStepDetected = () => {
+      setIsStepPulse(true);
+      setTimeout(() => setIsStepPulse(false), 200);
+    };
 
     // 2. Initialize Three.js Island World
     const world = new IslandWorld(containerRef.current);
@@ -153,7 +163,7 @@ export default function App() {
     const res = await trackerRef.current.enableSensors();
     setIsOnboardingOpen(false);
     if (res.success) {
-      showToast('Sensors connected! Hold phone upright and walk.');
+      showToast('3D Gyro & Pedometer connected! Walk forward.');
     } else {
       showToast(res.message);
     }
@@ -173,7 +183,7 @@ export default function App() {
   const handleZeroHeading = () => {
     if (!trackerRef.current) return;
     trackerRef.current.calibrateForwardHeading();
-    showToast('Compass heading zeroed to front direction.');
+    showToast('Compass heading zeroed to current direction.');
   };
 
   const handleResetOdometer = () => {
@@ -196,10 +206,44 @@ export default function App() {
     }));
   };
 
+  const handleCycleSensitivity = () => {
+    setSettings((prev) => {
+      let nextSens = 0.9;
+      if (prev.stepSensitivity > 1.2) nextSens = 0.65; // High
+      else if (prev.stepSensitivity <= 0.7) nextSens = 0.9; // Balanced
+      else nextSens = 1.4; // Firm
+      showToast(`Step Sensitivity: ${nextSens <= 0.7 ? 'High' : nextSens <= 1.0 ? 'Balanced' : 'Firm'}`);
+      return { ...prev, stepSensitivity: nextSens };
+    });
+  };
+
+  // Touch drag to look around
+  const handlePointerDown = (e: React.PointerEvent) => {
+    dragStartRef.current = { x: e.clientX };
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!dragStartRef.current || !trackerRef.current) return;
+    const dx = e.clientX - dragStartRef.current.x;
+    dragStartRef.current = { x: e.clientX };
+    trackerRef.current.addManualYaw(-dx * 0.35);
+  };
+
+  const handlePointerUp = () => {
+    dragStartRef.current = null;
+  };
+
   return (
     <div className="relative w-full h-full overflow-hidden bg-slate-950 font-sans select-none">
-      {/* 3D WebGL Canvas Container */}
-      <div ref={containerRef} className="absolute inset-0 w-full h-full z-0 cursor-grab" />
+      {/* 3D WebGL Canvas Container with Drag-to-Look */}
+      <div
+        ref={containerRef}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        className="absolute inset-0 w-full h-full z-0 cursor-grab active:cursor-grabbing touch-none"
+      />
 
       {/* Real-to-Virtual Walking Tactical HUD */}
       <WalkHUD
@@ -207,11 +251,13 @@ export default function App() {
         settings={settings}
         collectibles={collectibles}
         lastFoundRelic={lastFoundRelic}
+        isStepPulse={isStepPulse}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenPhoneConnect={() => setIsPhoneConnectOpen(true)}
         onToggleSafetyCamera={handleToggleSafetyCamera}
         onToggleMute={handleToggleMute}
         onZeroHeading={handleZeroHeading}
+        onCycleSensitivity={handleCycleSensitivity}
       />
 
       {/* Safety Rear Camera Picture-in-Picture */}
